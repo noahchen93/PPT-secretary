@@ -1,0 +1,16 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+
+# IDE files
+.idea/
+.vscode/
+
+# Large asset folders and files
+/presentation_output/
+/pdf_files/
+*.pdf
+*.pptx

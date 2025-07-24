@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI PPT 生成器 (带日志)</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://unpkg.com/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body>
+    <div id="app-wrapper">
+        <div class="main-content">
+            <h1>AI 一键生成 PPT</h1>
+            <p>选择一个AI模型，输入您的API密钥和主题，即可一键生成演示文稿。</p>
+            
+            <div class="form-group">
+                <label for="api-provider">选择AI平台:</label>
+                <select id="api-provider" class="form-input">
+                    <option value="google">Google Gemini</option>
+                    <option value="openai">OpenAI GPT</option>
+                    <option value="anthropic">Anthropic Claude</option>
+                    <option value="qwen">通义千问 (Qwen)</option>
+                    <option value="kimi">Kimi (Moonshot)</option>
+                    <option value="deepseek">DeepSeek</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="api-key">输入API密钥:</label>
+                <input type="password" id="api-key" placeholder="请输入您选择平台的API密钥" class="form-input">
+            </div>
+
+            <div class="form-group">
+                <label for="topic-input">输入主题:</label>
+                <input type="text" id="topic-input" placeholder="例如：量子计算的基本原理" class="form-input">
+            </div>
+            <button type="button" id="generate-btn">✨ 点击生成</button>
+        </div>
+
+        <div id="sidebar">
+            <div class="sidebar-section">
+                <h2>处理日志</h2>
+                <div id="log-output"></div>
+            </div>
+            <div class="sidebar-section">
+                <h2>生成内容 (JSON)</h2>
+                <pre id="code-output"><code>等待AI返回内容...</code></pre>
+            </div>
+        </div>
+    </div>
+
+    <div id="render-container" style="position: absolute; left: -9999px; top: -9999px; width: 1280px; height: 720px;"></div>
+
+    <script>
+        // --- API 配置中心 ---
+        const API_PROVIDERS = {
+            google: {
+                url: (apiKey) => `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`,
+                buildRequest: (prompt) => ({
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                }),
+                parseResponse: (data) => data.candidates[0].content.parts[0].text
+            },
+            openai: {
+                url: () => `https://api.openai.com/v1/chat/completions`,
+                buildRequest: (prompt, apiKey) => ({
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Authorization': `Bearer ${apiKey}` },
+                    body: JSON.stringify({ model: "gpt-3.5-turbo", messages: [{ role: "user", content: prompt }] })
+                }),
+                parseResponse: (data) => data.choices[0].message.content
+            },
+            anthropic: {
+                url: () => `https://api.anthropic.com/v1/messages`,
+                buildRequest: (prompt, apiKey) => ({
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json; charset=utf-8', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+                    body: JSON.stringify({ model: "claude-3-sonnet-20240229", max_tokens: 2048, messages: [{ role: "user", content: prompt }] })
+                }),
+                parseResponse: (data) => data.content[0].text
+            },
+            qwen: {
+                url: () => `https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation`,
+                buildRequest: (prompt, apiKey) => ({
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Authorization': `Bearer ${apiKey}` },
+                    body: JSON.stringify({ model: "qwen-turbo", input: { prompt: prompt } })
+                }),
+                parseResponse: (data) => data.output.text
+            },
+            kimi: {
+                url: () => `https://api.moonshot.cn/v1/chat/completions`,
+                buildRequest: (prompt, apiKey) => ({
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Authorization': `Bearer ${apiKey}` },
+                    body: JSON.stringify({ model: "moonshot-v1-8k", messages: [{ role: "user", content: prompt }] })
+                }),
+                parseResponse: (data) => data.choices[0].message.content
+            },
+            deepseek: {
+                url: () => `https://api.deepseek.com/chat/completions`,
+                buildRequest: (prompt, apiKey) => ({
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Authorization': `Bearer ${apiKey}` },
+                    body: JSON.stringify({ model: "deepseek-chat", messages: [{ role: "user", content: prompt }] })
+                }),
+                parseResponse: (data) => data.choices[0].message.content
+            }
+        };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const generateBtn = document.getElementById('generate-btn');
+            const logOutput = document.getElementById('log-output');
+            const codeOutput = document.querySelector('#code-output code');
+            const renderContainer = document.getElementById('render-container');
+
+            const log = (message, type = 'info') => {
+                const p = document.createElement('p');
+                p.textContent = message;
+                p.className = `log-${type}`;
+                logOutput.appendChild(p);
+                logOutput.scrollTop = logOutput.scrollHeight; // 自动滚动到底部
+            };
+
+            const logCode = (json) => {
+                codeOutput.textContent = JSON.stringify(json, null, 2);
+            };
+
+            const clearLogs = () => {
+                logOutput.innerHTML = '';
+                codeOutput.textContent = '等待AI返回内容...';
+            };
+
+            const callAI = async (topic, provider, apiKey) => {
+                log(`正在连接 ${provider} 的AI大脑...`, 'info');
+                if (!apiKey) throw new Error('尚未提供API密钥。');
+
+                const providerConfig = API_PROVIDERS[provider];
+                if (!providerConfig) throw new Error('选择了无效的AI平台。');
+
+                const prompt = `你是一个专业的演示文稿内容策划专家。请根据主题 "${topic}" 为我生成一个内容大纲。必须严格按照以下JSON格式返回，不要包含任何额外的解释或Markdown标记：{"title":"...","subtitle":"...","slides":[{"title":"...","search_term":"...","points":["...", ...]}, ...],"summary":{"title":"...","points":["...", "..."]}}`;
+                
+                const requestOptions = providerConfig.buildRequest(prompt, apiKey);
+                const apiUrl = providerConfig.url(apiKey);
+
+                const response = await fetch(apiUrl, requestOptions);
+                if (!response.ok) throw new Error(`API 请求失败: ${response.status} ${response.statusText}`);
+                
+                const data = await response.json();
+                const jsonString = providerConfig.parseResponse(data).replace(/```json\n|```/g, '').trim();
+                log('成功获取AI内容大纲。', 'success');
+                const parsedJson = JSON.parse(jsonString);
+                logCode(parsedJson);
+                return parsedJson;
+            };
+
+            const generatePPT = async () => {
+                clearLogs();
+                const topic = document.getElementById('topic-input').value;
+                const provider = document.getElementById('api-provider').value;
+                const apiKey = document.getElementById('api-key').value;
+
+                if (!topic) { log('请输入一个主题！', 'error'); return; }
+
+                generateBtn.disabled = true;
+                generateBtn.textContent = '生成中，请坐和放宽...';
+                
+                try {
+                    const pptData = await callAI(topic, provider, apiKey);
+                    log('开始生成PPT页面...', 'info');
+
+                    const pres = new PptxGenJS();
+                    pres.layout = 'LAYOUT_16x9';
+
+                    // ... (此处粘贴之前版本中完整的PPT页面生成逻辑) ...
+                    // 标题幻灯片
+                    log('正在生成标题页...', 'info');
+                    let titleSlide = pres.addSlide();
+                    titleSlide.addText(pptData.title, { x: '5%', y: '40%', w: '90%', fontSize: 48, bold: true, align: 'center' });
+                    titleSlide.addText(pptData.subtitle, { x: '5%', y: '55%', w: '90%', fontSize: 24, align: 'center' });
+
+                    // 内容幻灯片
+                    for (let i = 0; i < pptData.slides.length; i++) {
+                        const slideData = pptData.slides[i];
+                        log(`正在渲染幻灯片 ${i + 1}/${pptData.slides.length}: ${slideData.title}`, 'info');
+                        
+                        // 渲染HTML用于截图
+                        renderContainer.innerHTML = getSlideHtmlTemplate(slideData.title, slideData.points);
+                        await new Promise(r => setTimeout(r, 100)); // 等待DOM更新
+
+                        const canvas = await html2canvas(renderContainer.firstChild, { width: 1280, height: 720, scale: 1 });
+                        const imageDataUrl = canvas.toDataURL('image/png');
+
+                        let contentSlide = pres.addSlide();
+                        contentSlide.addImage({ data: imageDataUrl, x: 0, y: 0, w: '100%', h: '100%' });
+                    }
+
+                    // 总结幻灯片
+                    if (pptData.summary && pptData.summary.points.length > 0) {
+                        log('正在生成总结页...', 'info');
+                        let summarySlide = pres.addSlide();
+                        summarySlide.addText(pptData.summary.title, { x: 0.5, y: 0.5, w: '90%', h: 1, fontSize: 36, bold: true });
+                        summarySlide.addText(pptData.summary.points.join('\n'), { x: 0.5, y: 1.5, w: '90%', h: '75%', fontSize: 24, bullet: true });
+                    }
+
+                    log('所有页面渲染完毕，正在生成 .pptx 文件...', 'info');
+                    await pres.writeFile({ fileName: `${topic.replace(/\s+/g, '_')}.pptx` });
+                    log('🎉 生成成功！已开始下载。', 'success');
+
+                } catch (error) {
+                    log(`发生错误: ${error.message}`, 'error');
+                } finally {
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = '✨ 点击生成';
+                }
+            };
+
+            const getSlideHtmlTemplate = (title, points) => {
+                const pointsHtml = points.map(p => `<li>${p}</li>`).join('');
+                const imageUrl = 'https://images.pexels.com/photos/356079/pexels-photo-356079.jpeg'; // 默认背景图
+                return `
+                    <style>
+                        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700&display=swap');
+                        .slide { width: 1280px; height: 720px; display: flex; background-color: #ffffff; overflow: hidden; font-family: 'Noto Sans SC', sans-serif; }
+                        .content-pane { width: 58%; padding: 50px 40px 50px 80px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; }
+                        .title { font-size: 44px; font-weight: 700; color: #0d47a1; margin-bottom: 35px; line-height: 1.3; }
+                        .points ul { list-style: none; padding-left: 0; margin: 0; }
+                        .points li { font-size: 24px; color: #37474f; margin-bottom: 18px; padding-left: 35px; position: relative; line-height: 1.6; }
+                        .points li::before { content: '◆'; position: absolute; left: 0; color: #1976d2; font-size: 20px; top: 5px; }
+                        .image-pane { width: 42%; background-size: cover; background-position: center; clip-path: polygon(25% 0, 100% 0, 100% 100%, 0% 100%); }
+                    </style>
+                    <div class="slide">
+                        <div class="content-pane">
+                            <div class="title">${title}</div>
+                            <div class="points"><ul>${pointsHtml}</ul></div>
+                        </div>
+                        <div class="image-pane" style="background-image: url('${imageUrl}');"></div>
+                    </div>
+                `;
+            };
+
+            generateBtn.addEventListener('click', generatePPT);
+        });
+    </script>
+</body>
+</html>
